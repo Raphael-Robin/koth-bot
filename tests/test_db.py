@@ -187,3 +187,21 @@ async def test_old_invites_expire(db):
     assert await db.expire_old_invites("2000-01-01T00:00:00+00:00") == []
     expired = await db.expire_old_invites("2999-01-01T00:00:00+00:00")
     assert [i.id for i in expired] == [invite.id]
+
+
+async def test_rename_checks_other_teams_only(db):
+    wolves = await db.create_team("Wolves", 1)
+    await db.create_team("Bears", 2)
+    await db.rename_team(wolves.id, "WOLVES")
+    assert (await db.get_team(wolves.id)).name == "WOLVES"
+    with pytest.raises(TeamError):
+        await db.rename_team(wolves.id, "bears")
+
+
+async def test_extend_deadline_moves_start_and_clears_warning(db):
+    team = await db.create_team("Wolves", 1)
+    await db.mark_warned(team.id)
+    await db.extend_deadline(team.id, 24)
+    extended = await db.get_team(team.id)
+    assert extended.warned_at is None
+    assert extended.created_at > team.created_at

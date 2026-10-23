@@ -221,3 +221,14 @@ async def move_leader_access(
         old = guild.get_member(old_leader_id)
         if old:
             await old.remove_roles(staff_role, reason="No longer team leader")
+
+
+async def rename_team_space(guild: discord.Guild, team: Team) -> None:
+    """Rename roles and category to match team.label."""
+    for role_id, name in ((team.role_id, team.label), (team.staff_role_id, f"{team.label} Staff")):
+        role = guild.get_role(role_id or 0)
+        if role:
+            await role.edit(name=name, reason="Team renamed")
+    category = guild.get_channel(team.category_id or 0)
+    if category:
+        await category.edit(name=team.label, reason="Team renamed")

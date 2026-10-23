@@ -3,7 +3,7 @@
 import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import aiosqlite
@@ -279,9 +279,11 @@ class Database:
         )
         return Team(**dict(row)) if row else None
 
-    async def name_taken(self, name: str) -> bool:
+    async def name_taken(self, name: str, *, except_team: int | None = None) -> bool:
         row = await self._one(
-            "SELECT 1 FROM teams WHERE lower(name) = lower(?) AND status != 'disbanded'", (name,)
+            "SELECT 1 FROM teams WHERE lower(name) = lower(?) AND status != 'disbanded' "
+            "AND id IS NOT ?",
+            (name, except_team),
         )
         return row is not None
 
@@ -433,6 +435,22 @@ class Database:
             await conn.execute(
                 "UPDATE members SET is_helper = 0 WHERE team_id = ? AND user_id = ?",
                 (team_id, new_leader_id),
+            )
+
+    async def rename_team(self, team_id: int, name: str) -> None:
+        async with self.transaction() as conn:
+            if await self.name_taken(name, except_team=team_id):
+                raise TeamError(f"A team called **{name}** already exists.")
+            await conn.execute("UPDATE teams SET name = ? WHERE id = ?", (name, team_id))
+
+    async def extend_deadline(self, team_id: int, hours: int) -> None:
+        """Push a forming team's 3-day deadline back by moving its start time."""
+        team = await self.get_team(team_id)
+        start = datetime.fromisoformat(team.created_at) + timedelta(hours=hours)
+        async with self.transaction() as conn:
+            await conn.execute(
+                "UPDATE teams SET created_at = ?, warned_at = NULL WHERE id = ?",
+                (start.isoformat(timespec="seconds"), team_id),
             )
 
     async def mark_warned(self, team_id: int) -> None:
