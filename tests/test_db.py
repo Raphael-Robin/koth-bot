@@ -104,3 +104,86 @@ async def test_player_character_is_upserted(db):
     await db.set_player_character(9, "def", "Fixed", "Guild")
     player = await db.get_player(9)
     assert (player.albion_id, player.albion_name, player.albion_guild) == ("def", "Fixed", "Guild")
+
+
+async def _full_team(db, name="Wolves", leader=1, others=(2, 3)):
+    team = await db.create_team(name, leader)
+    for user_id in others:
+        await db.join_team(team.id, user_id)
+    return await db.get_team(team.id)
+
+
+async def test_leader_cannot_leave_but_members_can(db):
+    team = await _full_team(db)
+    with pytest.raises(TeamError):
+        await db.leave_team(team.id, 1)
+    await db.leave_team(team.id, 2)
+    assert await db.member_count(team.id) == 2
+    # Dropping under 3 after validation does not un-validate the team.
+    assert (await db.get_team(team.id)).status == "active"
+
+
+async def test_left_player_can_rejoin(db):
+    team = await _full_team(db)
+    await db.leave_team(team.id, 2)
+    await db.join_team(team.id, 2)
+    assert await db.member_count(team.id) == 3
+
+
+async def test_disband_clears_pending_and_keeps_members(db):
+    team = await _full_team(db)
+    app, _ = await db.create_application(team.id, 9)
+    invite = await db.create_invite(team.id, 8, 1)
+    apps, invites = await db.disband_team(team.id)
+    assert [a.id for a in apps] == [app.id]
+    assert [i.id for i in invites] == [invite.id]
+    assert await db.get_application(app.id) is None
+    disbanded = await db.get_team(team.id)
+    assert disbanded.status == "disbanded" and disbanded.role_id is None
+    assert await db.member_count(team.id) == 3
+    assert (await db.disbanded_team_led_by(1)).id == team.id
+
+
+async def test_restore_brings_back_remaining_members(db):
+    team = await _full_team(db)
+    await db.disband_team(team.id)
+    other = await db.create_team("Bears", 7)
+    await db.join_team(other.id, 3)  # player 3 moves on and leaves the disbanded team
+    restored = await db.restore_team(team.id)
+    assert restored.status == "forming"
+    assert restored.warned_at is None
+    assert sorted(m.user_id for m in await db.list_members(team.id)) == [1, 2]
+
+
+async def test_restore_with_enough_members_is_active(db):
+    team = await _full_team(db)
+    await db.disband_team(team.id)
+    assert (await db.restore_team(team.id)).status == "active"
+
+
+async def test_restore_refused_when_name_reused(db):
+    team = await _full_team(db)
+    await db.disband_team(team.id)
+    await db.create_team("wolves", 7)
+    with pytest.raises(TeamError):
+        await db.restore_team(team.id)
+
+
+async def test_transfer_leader_requires_membership(db):
+    team = await _full_team(db)
+    await db.set_helper(team.id, 2, True)
+    with pytest.raises(TeamError):
+        await db.transfer_leader(team.id, 99)
+    await db.transfer_leader(team.id, 2)
+    assert (await db.get_team(team.id)).leader_id == 2
+    assert not any(m.is_helper for m in await db.list_members(team.id))
+    assert await db.is_staff(team.id, 2)
+    assert not await db.is_staff(team.id, 1)
+
+
+async def test_old_invites_expire(db):
+    team = await db.create_team("Wolves", 1)
+    invite = await db.create_invite(team.id, 9, 1)
+    assert await db.expire_old_invites("2000-01-01T00:00:00+00:00") == []
+    expired = await db.expire_old_invites("2999-01-01T00:00:00+00:00")
+    assert [i.id for i in expired] == [invite.id]

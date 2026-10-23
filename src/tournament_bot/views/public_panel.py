@@ -48,9 +48,43 @@ class PublicPanelView(discord.ui.View):
                 actor=interaction.user,
             )
             return
-        player = await interaction.client.db.get_player(interaction.user.id)
+        bot = interaction.client
+        player = await bot.db.get_player(interaction.user.id)
+        old_team = await bot.db.disbanded_team_led_by(interaction.user.id)
+        current = await bot.db.current_team_of(interaction.user.id)
+        if old_team and current and current.id == old_team.id:
+            await interaction.response.send_message(
+                f"You led **{old_team.name}**, which is disbanded. Restore it, or start a new "
+                "team? Starting a new one deletes the old team for good.",
+                view=RestoreOrNewView(old_team.id, player.albion_name if player else None),
+                ephemeral=True,
+            )
+            return
         await interaction.response.send_modal(
             CreateTeamModal(player.albion_name if player else None)
+        )
+
+    @discord.ui.button(
+        label="Leave team", style=discord.ButtonStyle.secondary, custom_id="panel:leave"
+    )
+    async def leave(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        bot = interaction.client
+        team = await bot.db.current_team_of(interaction.user.id)
+        if team is None or team.status == "disbanded":
+            await interaction.response.send_message("You aren't in a team.", ephemeral=True)
+            return
+        if await bot.db.rosters_locked():
+            await interaction.response.send_message("Rosters are locked.", ephemeral=True)
+            return
+        if team.leader_id == interaction.user.id:
+            await interaction.response.send_message(
+                "Leaders can't leave. Transfer leadership or disband the team from "
+                f"<#{team.manage_channel_id}> first.",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.send_message(
+            f"Leave **{team.name}**?", view=ConfirmLeaveView(team.id), ephemeral=True
         )
 
     @discord.ui.button(
@@ -71,9 +105,58 @@ class PublicPanelView(discord.ui.View):
         )
 
 
+class ConfirmLeaveView(discord.ui.View):
+    def __init__(self, team_id: int) -> None:
+        super().__init__(timeout=120)
+        self.team_id = team_id
+
+    @discord.ui.button(label="Leave", style=discord.ButtonStyle.danger)
+    async def confirm(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        bot = interaction.client
+        team = await bot.db.get_team(self.team_id)
+        await interaction.response.edit_message(content="Leaving...", view=None)
+        try:
+            await bot.remove_member(team, interaction.user, actor=interaction.user, how="left")
+        except TeamError as exc:
+            await interaction.edit_original_response(content=str(exc))
+            return
+        await interaction.edit_original_response(content=f"You left **{team.name}**.")
+
+
+class RestoreOrNewView(discord.ui.View):
+    def __init__(self, old_team_id: int, known_character: str | None) -> None:
+        super().__init__(timeout=300)
+        self.old_team_id = old_team_id
+        self.known_character = known_character
+
+    @discord.ui.button(label="Restore my old team", style=discord.ButtonStyle.success)
+    async def restore(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        bot = interaction.client
+        team = await bot.db.get_team(self.old_team_id)
+        if team is None or team.status != "disbanded":
+            await interaction.response.edit_message(content="That team is gone.", view=None)
+            return
+        await interaction.response.edit_message(content=f"Restoring **{team.name}**...", view=None)
+        try:
+            team = await bot.restore(team, actor=interaction.user)
+        except TeamError as exc:
+            await interaction.edit_original_response(content=str(exc))
+            return
+        await interaction.edit_original_response(
+            content=f"**{team.name}** is back. Head to <#{team.manage_channel_id}>."
+        )
+
+    @discord.ui.button(label="Create a new team", style=discord.ButtonStyle.primary)
+    async def new(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await interaction.response.send_modal(
+            CreateTeamModal(self.known_character, replaces=self.old_team_id)
+        )
+
+
 class CreateTeamModal(discord.ui.Modal, title="Create a team"):
-    def __init__(self, known_character: str | None) -> None:
+    def __init__(self, known_character: str | None, replaces: int | None = None) -> None:
         super().__init__()
+        self.replaces = replaces
         self.team_name = discord.ui.TextInput(label="Team name", min_length=2, max_length=32)
         self.character = character_name_input()
         self.character.default = known_character
@@ -90,14 +173,26 @@ class CreateTeamModal(discord.ui.Modal, title="Create a team"):
         await interaction.response.defer(ephemeral=True, thinking=True)
 
         async def on_pick(select_interaction: discord.Interaction, character: Character) -> None:
-            await finish_create(select_interaction, name, character)
+            await finish_create(select_interaction, name, character, self.replaces)
 
         await lookup_character(interaction, self.character.value.strip(), on_pick)
 
 
-async def finish_create(interaction: discord.Interaction, name: str, character: Character) -> None:
+async def finish_create(
+    interaction: discord.Interaction, name: str, character: Character, replaces: int | None
+) -> None:
     bot = interaction.client
     await interaction.response.edit_message(content=f"Creating **{name}**...", view=None)
+    if replaces:
+        old_team = await bot.db.get_team(replaces)
+        if (
+            old_team
+            and old_team.status == "disbanded"
+            and old_team.leader_id == interaction.user.id
+        ):
+            await bot.hard_delete(
+                old_team, actor=interaction.user, why="its leader started a new team"
+            )
     try:
         team = await bot.db.create_team(name, interaction.user.id)
     except TeamError as exc:

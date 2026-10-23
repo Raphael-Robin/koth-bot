@@ -49,8 +49,15 @@ class ApplicationButton(
             )
             return
 
-        await interaction.response.defer()
         status = "accepted" if self.action == "accept" else "denied"
+        if (
+            status == "accepted"
+            and await bot.db.rosters_locked()
+            and not bot.is_admin(interaction.user)
+        ):
+            await interaction.response.send_message("Rosters are locked.", ephemeral=True)
+            return
+        await interaction.response.defer()
         if not await bot.db.decide_application(application.id, status, interaction.user.id):
             await interaction.followup.send("This application was already handled.", ephemeral=True)
             return
