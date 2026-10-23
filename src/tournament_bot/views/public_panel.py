@@ -210,6 +210,7 @@ async def finish_create(
         )
         return
     await bot.db.set_team_discord_ids(team.id, **ids)
+    await bot.sync_leader_role(interaction.user.id)
     team = await bot.db.get_team(team.id)
 
     manage_channel = bot.guild.get_channel(team.manage_channel_id)

@@ -150,6 +150,42 @@ class TournamentBot(commands.Bot):
     async def can_staff(self, team: Team, user: discord.abc.User) -> bool:
         return await self.db.is_staff(team.id, user.id) or self.is_admin(user)
 
+    # Shared leader role
+
+    async def leader_role(self) -> discord.Role | None:
+        role_id = await self.db.get_setting("leader_role_id")
+        return self.guild.get_role(int(role_id)) if role_id else None
+
+    async def sync_leader_role(self, *user_ids: int) -> int:
+        """Give the shared leader role to whoever leads a live team and take it from the rest.
+
+        With no user_ids, checks every current leader and every holder of the role. Returns
+        the number of role changes.
+        """
+        role = await self.leader_role()
+        if role is None:
+            return 0
+        leaders = {t.leader_id for t in await self.db.list_teams(("forming", "active"))}
+        if not user_ids:
+            user_ids = (*leaders, *(m.id for m in role.members))
+        changed = 0
+        for user_id in set(user_ids):
+            member = self.guild.get_member(user_id)
+            if member is None:
+                continue
+            try:
+                if user_id in leaders and role not in member.roles:
+                    await member.add_roles(role, reason="Leads a team")
+                elif user_id not in leaders and role in member.roles:
+                    await member.remove_roles(role, reason="No longer leads a team")
+                else:
+                    continue
+            except discord.HTTPException:
+                log.warning("Could not update the leader role of %s", member)
+                continue
+            changed += 1
+        return changed
+
     # Audit log
 
     async def audit(
@@ -278,6 +314,7 @@ class TournamentBot(commands.Bot):
         ]
         if member and roles:
             await member.remove_roles(*roles, reason=f"{how} {team.label}")
+        await self.sync_leader_role(user.id)
         await self.refresh_manage_panel(team)
         await self.refresh_public_panel()
         await self.audit(
@@ -317,6 +354,7 @@ class TournamentBot(commands.Bot):
         old_leader_id = team.leader_id
         await self.db.transfer_leader(team.id, new_leader.id)
         await move_leader_access(self.guild, team, old_leader_id, new_leader)
+        await self.sync_leader_role(old_leader_id, new_leader.id)
         team = await self.db.get_team(team.id)
         await self.refresh_manage_panel(team)
         await self.refresh_public_panel()
@@ -345,6 +383,7 @@ class TournamentBot(commands.Bot):
                 invite.channel_id, invite.message_id, "This invite expired: the team disbanded."
             )
         await archive_team_space(self.guild, team, self.admin_role)
+        await self.sync_leader_role(team.leader_id)
         team = await self.db.get_team(team.id)
         await self.refresh_manage_panel(team)
         await self.refresh_public_panel()
@@ -367,6 +406,7 @@ class TournamentBot(commands.Bot):
                 "Discord refused to recreate the team's roles. Please try again."
             ) from exc
         await self.db.set_team_discord_ids(team.id, **ids)
+        await self.sync_leader_role(team.leader_id)
         team = await self.db.get_team(team.id)
         await self.refresh_manage_panel(team)
         await self.refresh_public_panel()
@@ -397,6 +437,7 @@ class TournamentBot(commands.Bot):
             )
         await delete_team_space(self.guild, team)
         await self.db.hard_delete_team(team.id)
+        await self.sync_leader_role(team.leader_id)
         await self.refresh_public_panel()
         by = f" by {actor.mention}" if actor else ""
         await self.audit(

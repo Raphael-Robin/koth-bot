@@ -367,6 +367,42 @@ class Admin(commands.Cog):
         file = discord.File(io.BytesIO(out.getvalue().encode()), filename="teams.csv")
         await interaction.response.send_message(file=file, ephemeral=True)
 
+    @setup.command(
+        name="leader-role", description="Set the role every team leader gets (leave empty to stop)"
+    )
+    @app_commands.describe(role="Given to every team leader and taken back when they stop leading")
+    @is_admin()
+    async def setup_leader_role(
+        self, interaction: discord.Interaction, role: discord.Role | None = None
+    ) -> None:
+        guild = self.bot.guild
+        if role and (role.managed or role.is_default() or role >= guild.me.top_role):
+            await interaction.response.send_message(
+                f"I can't hand out {role.mention}. Pick a normal role and drag my role above it "
+                "in the server settings.",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        old = await self.bot.leader_role()
+        if old and old != role:
+            leaders = {t.leader_id for t in await self.bot.db.list_teams(("forming", "active"))}
+            for member in old.members:
+                if member.id in leaders:
+                    await member.remove_roles(old, reason="Leader role changed")
+        await self.bot.db.set_setting("leader_role_id", str(role.id) if role else "")
+        changed = await self.bot.sync_leader_role()
+        if role:
+            text = f"Team leaders now get {role.mention} ({changed} role changes)."
+        else:
+            text = "Team leaders no longer get a shared role."
+        await interaction.followup.send(text, ephemeral=True)
+        await self.bot.audit(
+            f"{interaction.user.mention} set the leader role to {role.mention if role else 'none'}",
+            "leader_role_set",
+            actor=interaction.user,
+        )
+
     @app_commands.command(name="resync", description="Fix team roles and redraw every panel")
     @is_admin()
     async def resync(self, interaction: discord.Interaction) -> None:
@@ -391,6 +427,7 @@ class Admin(commands.Cog):
                         await member.add_roles(role, reason="Resync")
                         fixed += 1
             await self.bot.refresh_manage_panel(t)
+        fixed += await self.bot.sync_leader_role()
         await self.bot.refresh_public_panel()
         await interaction.followup.send(
             f"Resync done: {fixed} role changes, panels redrawn.", ephemeral=True

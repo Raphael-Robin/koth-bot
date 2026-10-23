@@ -46,3 +46,11 @@ Run this on the test server with the test bot before the tournament. You need yo
 
 ## Deadline (optional, needs a few days)
 - [ ] A team left at 1 member gets a warning after 48 hours and is deleted after 72 hours.
+
+## Shared leader role
+
+- [ ] Create a "Team Leader" role and a channel only that role can see, then run `/setup leader-role` with it. Every current leader gets the role.
+- [ ] Create a team: the new leader gets the role and can see the leaders channel, but not other teams' #manage-team.
+- [ ] Transfer leadership: the role moves to the new leader.
+- [ ] Disband a team, then restore it: the role goes and comes back.
+- [ ] Run `/setup leader-role` with no role: nobody gets it any more.

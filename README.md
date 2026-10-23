@@ -32,6 +32,10 @@ touches tournament data.
    and `./data/test`, so they survive rebuilds and restarts.
 6. In each server's sign-up channel, run `/setup panel`. The test server's panel is labelled
    **[TEST SERVER]**.
+7. Optionally, create a "Team Leader" role and a leaders channel that only that role can see,
+   then run `/setup leader-role` with it. Each server keeps its own setting. The role only opens
+   shared channels: each team's #manage-team stays tied to its own leader, so leaders never see
+   each other's teams.
 
 ## Admin commands
 
@@ -41,6 +45,7 @@ roster-lock and one-team checks.
 | Command | What it does |
 | --- | --- |
 | `/setup panel` | Posts the public panel in the current channel |
+| `/setup leader-role [role]` | Gives every team leader this role, and takes it back when they stop leading. Leave it empty to turn it off |
 | `/signups open` / `close` | Allows or stops creating and applying to teams |
 | `/rosters lock` / `unlock` | Freezes or unfreezes every team's members |
 | `/team info <team>` | Shows a team's roster |
