@@ -40,7 +40,8 @@ class Admin(commands.Cog):
             await self.bot._delete_message(int(old_channel), int(old_message))
 
         message = await interaction.channel.send(
-            embed=embeds.public_panel([], await db.signups_open()), view=PublicPanelView()
+            embed=embeds.public_panel([], await db.signups_open(), self.bot.config.is_test),
+            view=PublicPanelView(),
         )
         await db.set_setting("panel_channel_id", str(interaction.channel.id))
         await db.set_setting("panel_message_id", str(message.id))

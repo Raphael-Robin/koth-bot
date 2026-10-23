@@ -12,6 +12,11 @@ class Config:
     log_channel_id: int
     db_path: str
     albion_api_base: str
+    env_name: str
+
+    @property
+    def is_test(self) -> bool:
+        return self.env_name != "prod"
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -32,4 +37,5 @@ class Config:
             albion_api_base=os.getenv(
                 "ALBION_API_BASE", "https://gameinfo-ams.albiononline.com/api/gameinfo"
             ),
+            env_name=os.getenv("BOT_ENV", "prod").lower(),
         )

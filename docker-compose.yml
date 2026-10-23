@@ -1,7 +1,20 @@
+# Two copies of the bot run side by side, each with its own Discord application,
+# server and SQLite database. Start one with `docker compose up -d bot-test`.
 services:
-  bot:
+  bot-prod:
     build: .
-    env_file: .env
+    env_file: .env.prod
+    environment:
+      BOT_ENV: prod
     volumes:
-      - ./data:/data
+      - ./data/prod:/data
+    restart: unless-stopped
+
+  bot-test:
+    build: .
+    env_file: .env.test
+    environment:
+      BOT_ENV: test
+    volumes:
+      - ./data/test:/data
     restart: unless-stopped
