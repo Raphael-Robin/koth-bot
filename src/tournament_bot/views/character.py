@@ -19,9 +19,12 @@ def character_name_input() -> discord.ui.TextInput:
 
 
 class CharacterSelect(discord.ui.Select):
-    def __init__(self, characters: list[Character], on_pick: OnPick) -> None:
+    def __init__(
+        self, characters: list[Character], on_pick: OnPick, user_id: int | None = None
+    ) -> None:
         self.characters = {c.id: c for c in characters}
         self.on_pick = on_pick
+        self.user_id = user_id
         super().__init__(
             placeholder="Pick your character",
             options=[
@@ -33,23 +36,28 @@ class CharacterSelect(discord.ui.Select):
     async def callback(self, interaction: discord.Interaction) -> None:
         character = self.characters[self.values[0]]
         await interaction.client.db.set_player_character(
-            interaction.user.id, character.id, character.name, character.guild
+            self.user_id or interaction.user.id, character.id, character.name, character.guild
         )
         self.view.stop()
         await self.on_pick(interaction, character)
 
 
 class CharacterSelectView(discord.ui.View):
-    def __init__(self, characters: list[Character], on_pick: OnPick) -> None:
+    def __init__(
+        self, characters: list[Character], on_pick: OnPick, user_id: int | None = None
+    ) -> None:
         super().__init__(timeout=300)
-        self.add_item(CharacterSelect(characters, on_pick))
+        self.add_item(CharacterSelect(characters, on_pick, user_id))
 
 
-async def lookup_character(interaction: discord.Interaction, name: str, on_pick: OnPick) -> None:
+async def lookup_character(
+    interaction: discord.Interaction, name: str, on_pick: OnPick, *, for_user_id: int | None = None
+) -> None:
     """Search the Albion API and show the results as a select menu.
 
     The interaction must already be deferred. on_pick runs with the select's interaction
-    once the player chooses, after their character has been saved.
+    once a character is chosen, after it has been saved for the user (or for_user_id, when
+    an admin links someone else's character).
     """
     try:
         characters = await interaction.client.albion.search(name)
@@ -67,7 +75,7 @@ async def lookup_character(interaction: discord.Interaction, name: str, on_pick:
         )
         return
     await interaction.followup.send(
-        "Which one is you? Each option shows the character's guild.",
-        view=CharacterSelectView(characters, on_pick),
+        "Which one is it? Each option shows the character's guild.",
+        view=CharacterSelectView(characters, on_pick, for_user_id),
         ephemeral=True,
     )
