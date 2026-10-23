@@ -39,6 +39,21 @@ class TournamentBot(commands.Bot):
         await self.db.close()
         await super().close()
 
+    async def on_ready(self) -> None:
+        log.info("Logged in as %s (%s environment)", self.user, self.config.env_name)
+        for guild in self.guilds:
+            await self._leave_if_foreign(guild)
+
+    async def on_guild_join(self, guild: discord.Guild) -> None:
+        await self._leave_if_foreign(guild)
+
+    async def _leave_if_foreign(self, guild: discord.Guild) -> None:
+        # Each environment is its own bot application bound to one server. Staying in a second
+        # server would let its buttons reach this environment's database.
+        if guild.id != self.config.guild_id:
+            log.warning("Leaving %s (%s): not this environment's server", guild.name, guild.id)
+            await guild.leave()
+
     @property
     def guild(self) -> discord.Guild:
         guild = self.get_guild(self.config.guild_id)
@@ -105,7 +120,7 @@ class TournamentBot(commands.Bot):
             count = await self.db.member_count(team.id)
             if count >= MIN_MEMBERS:
                 teams.append((team, count))
-        embed = embeds.public_panel(teams, await self.db.signups_open())
+        embed = embeds.public_panel(teams, await self.db.signups_open(), self.config.is_test)
         try:
             await channel.get_partial_message(int(message_id)).edit(embed=embed)
         except discord.NotFound:

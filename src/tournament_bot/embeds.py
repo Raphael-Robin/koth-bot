@@ -10,9 +10,12 @@ FORMING_DEADLINE = timedelta(days=3)
 COLOUR = discord.Colour.dark_gold()
 
 
-def public_panel(teams: list[tuple[Team, int]], signups_open: bool) -> discord.Embed:
+def public_panel(
+    teams: list[tuple[Team, int]], signups_open: bool, test: bool = False
+) -> discord.Embed:
     """Only validated teams (3+ members) are listed, by name, without their number."""
-    embed = discord.Embed(title="King of the Hill: teams", colour=COLOUR)
+    title = "King of the Hill: teams" + (" [TEST SERVER]" if test else "")
+    embed = discord.Embed(title=title, colour=COLOUR)
     if teams:
         embed.description = "\n".join(
             f"**{team.name}**, led by <@{team.leader_id}> ({count} members)"
