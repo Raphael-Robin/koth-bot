@@ -337,6 +337,108 @@ class Database:
         async with self.transaction() as conn:
             await conn.execute("DELETE FROM teams WHERE id = ?", (team_id,))
 
+    async def disbanded_team_led_by(self, user_id: int) -> Team | None:
+        row = await self._one(
+            "SELECT * FROM teams WHERE leader_id = ? AND status = 'disbanded' "
+            "ORDER BY disbanded_at DESC LIMIT 1",
+            (user_id,),
+        )
+        return Team(**dict(row)) if row else None
+
+    async def pending_for_team(self, team_id: int) -> tuple[list[Application], list[Invite]]:
+        apps = await self._all(
+            "SELECT id, team_id, user_id, status, channel_id, message_id FROM applications "
+            "WHERE team_id = ? AND status = 'pending'",
+            (team_id,),
+        )
+        invites = await self._all(
+            "SELECT id, team_id, user_id, invited_by, status, channel_id, message_id "
+            "FROM invites WHERE team_id = ? AND status = 'pending'",
+            (team_id,),
+        )
+        return [Application(**dict(r)) for r in apps], [Invite(**dict(r)) for r in invites]
+
+    async def disband_team(self, team_id: int) -> tuple[list[Application], list[Invite]]:
+        """Soft-delete a team. Members stay listed so the team can be restored.
+
+        Returns the pending applications (deleted) and invites (expired) it had.
+        """
+        async with self.transaction() as conn:
+            apps, invites = await self.pending_for_team(team_id)
+            await conn.execute(
+                "DELETE FROM applications WHERE team_id = ? AND status = 'pending'", (team_id,)
+            )
+            await conn.execute(
+                "UPDATE invites SET status = 'expired' WHERE team_id = ? AND status = 'pending'",
+                (team_id,),
+            )
+            await conn.execute(
+                "UPDATE teams SET status = 'disbanded', disbanded_at = ?, role_id = NULL, "
+                "staff_role_id = NULL WHERE id = ?",
+                (now(), team_id),
+            )
+        return apps, invites
+
+    async def restore_team(self, team_id: int) -> Team:
+        """Bring a disbanded team back with whichever members haven't joined another team.
+
+        Under MIN_MEMBERS it goes back to forming with a fresh 3-day timer.
+        """
+        async with self.transaction() as conn:
+            team = await self._one("SELECT * FROM teams WHERE id = ?", (team_id,))
+            if not team or team["status"] != "disbanded":
+                raise TeamError("That team can't be restored.")
+            if await self.name_taken(team["name"]):
+                raise TeamError(
+                    f"Another team is now called **{team['name']}**, so this one can't be "
+                    "restored. Ask an admin to rename one of them."
+                )
+            leader_in = await self._one(
+                "SELECT team_id FROM members WHERE user_id = ? AND left_at IS NULL",
+                (team["leader_id"],),
+            )
+            if not leader_in or leader_in["team_id"] != team_id:
+                raise TeamError(
+                    "You have joined another team since, so this one can't be restored."
+                )
+            count = await self._one(
+                "SELECT COUNT(*) AS n FROM members WHERE team_id = ? AND left_at IS NULL",
+                (team_id,),
+            )
+            if count["n"] >= MIN_MEMBERS:
+                await conn.execute(
+                    "UPDATE teams SET status = 'active', disbanded_at = NULL WHERE id = ?",
+                    (team_id,),
+                )
+            else:
+                await conn.execute(
+                    "UPDATE teams SET status = 'forming', disbanded_at = NULL, created_at = ?, "
+                    "warned_at = NULL WHERE id = ?",
+                    (now(), team_id),
+                )
+        return await self.get_team(team_id)
+
+    async def transfer_leader(self, team_id: int, new_leader_id: int) -> None:
+        async with self.transaction() as conn:
+            member = await self._one(
+                "SELECT 1 FROM members WHERE team_id = ? AND user_id = ? AND left_at IS NULL",
+                (team_id, new_leader_id),
+            )
+            if not member:
+                raise TeamError("The new leader must be a member of the team.")
+            await conn.execute(
+                "UPDATE teams SET leader_id = ? WHERE id = ?", (new_leader_id, team_id)
+            )
+            # The leader is staff by role, so the helper flag would be redundant.
+            await conn.execute(
+                "UPDATE members SET is_helper = 0 WHERE team_id = ? AND user_id = ?",
+                (team_id, new_leader_id),
+            )
+
+    async def mark_warned(self, team_id: int) -> None:
+        async with self.transaction() as conn:
+            await conn.execute("UPDATE teams SET warned_at = ? WHERE id = ?", (now(), team_id))
+
     # Members
 
     async def list_members(self, team_id: int) -> list[Member]:
@@ -354,6 +456,31 @@ class Database:
             "SELECT COUNT(*) AS n FROM members WHERE team_id = ? AND left_at IS NULL", (team_id,)
         )
         return row["n"]
+
+    async def leave_team(self, team_id: int, user_id: int, *, allow_leader: bool = False) -> None:
+        async with self.transaction() as conn:
+            team = await self._one("SELECT leader_id FROM teams WHERE id = ?", (team_id,))
+            if team and team["leader_id"] == user_id and not allow_leader:
+                raise TeamError(
+                    "The leader can't leave. Transfer leadership or disband the team first."
+                )
+            cur = await conn.execute(
+                "UPDATE members SET left_at = ?, is_helper = 0 "
+                "WHERE team_id = ? AND user_id = ? AND left_at IS NULL",
+                (now(), team_id, user_id),
+            )
+            if cur.rowcount != 1:
+                raise TeamError("That player isn't in this team.")
+
+    async def set_helper(self, team_id: int, user_id: int, helper: bool) -> None:
+        async with self.transaction() as conn:
+            cur = await conn.execute(
+                "UPDATE members SET is_helper = ? WHERE team_id = ? AND user_id = ? "
+                "AND left_at IS NULL",
+                (int(helper), team_id, user_id),
+            )
+            if cur.rowcount != 1:
+                raise TeamError("That player isn't in this team.")
 
     async def is_staff(self, team_id: int, user_id: int) -> bool:
         row = await self._one(
@@ -524,6 +651,20 @@ class Database:
                 (status, invite_id, was),
             )
             return cur.rowcount == 1
+
+    async def expire_old_invites(self, older_than: str) -> list[Invite]:
+        """Expire pending invites created before the given ISO time."""
+        async with self.transaction() as conn:
+            rows = await self._all(
+                "SELECT id, team_id, user_id, invited_by, status, channel_id, message_id "
+                "FROM invites WHERE status = 'pending' AND created_at < ?",
+                (older_than,),
+            )
+            await conn.execute(
+                "UPDATE invites SET status = 'expired' WHERE status = 'pending' AND created_at < ?",
+                (older_than,),
+            )
+        return [Invite(**dict(r)) for r in rows]
 
     # Audit log
 
