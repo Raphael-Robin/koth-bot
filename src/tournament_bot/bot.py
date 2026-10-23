@@ -38,9 +38,8 @@ class TournamentBot(commands.Bot):
         await self.load_extension("tournament_bot.admin")
         await self.load_extension("tournament_bot.lifecycle")
         await self.load_extension("tournament_bot.players")
-        guild = discord.Object(id=self.config.guild_id)
-        self.tree.copy_global_to(guild=guild)
-        await self.tree.sync(guild=guild)
+        # Commands are synced from on_ready, once we know the bot is really in the server.
+        self._synced = False
 
     async def close(self) -> None:
         await self.albion.close()
@@ -48,12 +47,75 @@ class TournamentBot(commands.Bot):
         await super().close()
 
     async def on_ready(self) -> None:
-        log.info("Logged in as %s (%s environment)", self.user, self.config.env_name)
+        guilds = ", ".join(f"{g.name} ({g.id})" for g in self.guilds) or "none"
+        log.info(
+            "Logged in as %s (application %s, %s environment). Configured GUILD_ID %s. "
+            "Servers the bot is in: %s",
+            self.user,
+            self.application_id,
+            self.config.env_name,
+            self.config.guild_id,
+            guilds,
+        )
+        if self.get_guild(self.config.guild_id) is None:
+            log.error(
+                "This bot is not in the server GUILD_ID=%s, so it can't do anything yet. "
+                "Check that GUILD_ID is the server's ID (right-click the server icon, Copy Server "
+                "ID) and that DISCORD_TOKEN belongs to the bot you invited. To invite this bot: %s",
+                self.config.guild_id,
+                self.invite_url,
+            )
+            # Leaving other servers here could remove the bot from the right server when only
+            # GUILD_ID is wrong, so stay put and wait to be invited.
+            return
         for guild in self.guilds:
             await self._leave_if_foreign(guild)
+        await self._sync_commands()
 
     async def on_guild_join(self, guild: discord.Guild) -> None:
-        await self._leave_if_foreign(guild)
+        if guild.id == self.config.guild_id:
+            log.info("Joined the configured server %s", guild.name)
+            await self._sync_commands()
+            await self.refresh_public_panel()
+        elif self.get_guild(self.config.guild_id) is not None:
+            await self._leave_if_foreign(guild)
+
+    @property
+    def invite_url(self) -> str:
+        permissions = discord.Permissions(
+            view_channel=True,
+            manage_roles=True,
+            manage_channels=True,
+            send_messages=True,
+            embed_links=True,
+            manage_messages=True,
+            mention_everyone=True,
+            read_message_history=True,
+        )
+        return discord.utils.oauth_url(
+            self.application_id,
+            permissions=permissions,
+            guild=discord.Object(self.config.guild_id),
+            scopes=("bot", "applications.commands"),
+        )
+
+    async def _sync_commands(self) -> None:
+        if self._synced:
+            return
+        guild = discord.Object(id=self.config.guild_id)
+        self.tree.copy_global_to(guild=guild)
+        try:
+            await self.tree.sync(guild=guild)
+        except discord.Forbidden:
+            log.error(
+                "Discord refused to register slash commands in GUILD_ID=%s (Missing Access). "
+                "Re-invite the bot with the applications.commands scope: %s",
+                self.config.guild_id,
+                self.invite_url,
+            )
+            return
+        self._synced = True
+        log.info("Slash commands registered")
 
     async def _leave_if_foreign(self, guild: discord.Guild) -> None:
         # Each environment is its own bot application bound to one server. Staying in a second

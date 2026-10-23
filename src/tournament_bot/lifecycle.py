@@ -25,6 +25,8 @@ class Lifecycle(commands.Cog):
 
     @tasks.loop(minutes=5)
     async def sweep(self) -> None:
+        if self.bot.get_guild(self.bot.config.guild_id) is None:
+            return  # not in the server yet; on_ready already logged how to fix it
         try:
             await self.check_forming_teams()
             await self.expire_invites()
@@ -38,6 +40,8 @@ class Lifecycle(commands.Cog):
 
     async def refresh_panels(self) -> None:
         """Redraw every panel on startup, so panels posted by an older version get new buttons."""
+        if self.bot.get_guild(self.bot.config.guild_id) is None:
+            return
         try:
             await self.bot.refresh_public_panel()
             for team in await self.bot.db.list_teams(("forming", "active", "disbanded")):
