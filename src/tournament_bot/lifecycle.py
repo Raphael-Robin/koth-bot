@@ -34,6 +34,16 @@ class Lifecycle(commands.Cog):
     @sweep.before_loop
     async def before_sweep(self) -> None:
         await self.bot.wait_until_ready()
+        await self.refresh_panels()
+
+    async def refresh_panels(self) -> None:
+        """Redraw every panel on startup, so panels posted by an older version get new buttons."""
+        try:
+            await self.bot.refresh_public_panel()
+            for team in await self.bot.db.list_teams(("forming", "active", "disbanded")):
+                await self.bot.refresh_manage_panel(team)
+        except Exception:
+            log.exception("Refreshing panels on startup failed")
 
     async def check_forming_teams(self) -> None:
         bot = self.bot
